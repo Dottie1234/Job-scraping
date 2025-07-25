@@ -1,84 +1,107 @@
-## Importign libraries
+## Importing libraries
 from bs4 import BeautifulSoup
 import requests
 import time
 import pandas as pd
+import re
 
+# Helper to remove emojis from location
+def remove_emojis(text):
+    if not text:
+        return None
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "]+", flags=re.UNICODE)
+    return emoji_pattern.sub(r'', text).strip()
 
-## website request and text extraction
+## Website request and text extraction (with all corrections)
 def extract_remoteok_jobs(keyword):
     url = f"https://remoteok.com/remote-{keyword}-jobs"
-
-    #kimchi agent
     request = requests.get(url, headers={"User-Agent": "Kimchi"})
     results = []
 
-    ## extract text when status code is 200
     if request.status_code == 200:
-        
-        # get html
         soup = BeautifulSoup(request.text, "html.parser")
         jobs = soup.find_all("tr", class_="job")
 
-        #get texts
         for job in jobs:
             link_tag = job.find("a", class_="preventLink")
             link = f"https://remoteok.com/{link_tag['href']}" if link_tag and link_tag.has_attr('href') else None
-        
-            #extract job information
+
             company = job.find("h3", itemprop="name")
             job_title = job.find("h2", itemprop="title")
             location = job.find("div", class_="location")
-        
-            # extract salary
             salary_div = job.find('div', class_='location tooltip')
-            salary = salary_div.text.strip() if salary_div else None
-        
-            # extract posted time
             time_tag = job.find('time')
-            datetime_value = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
-            time_posted = time_tag.text.strip() if time_tag else None
-        
-            #extract tags
             tag_divs = job.find_all('div', class_='tag tag- action-add-tag')
-            searchkeys = [div.h3.text.strip() for div in tag_divs if div.h3] if tag_divs else None
-        
-            #  extract text values
-            company = company.string.strip() if company and company.string else None
-            job_title = job_title.string.strip() if job_title and job_title.string else None
-            location = location.string.strip() if location and location.string else None
 
-            # each item in a dictionary
+            # Extract text
+            company = company.string.strip() if company and company.string else None
+            job_title_text = job_title.string.strip() if job_title and job_title.string else None
+
+            # Remove emojis from location
+            raw_location = location.string.strip() if location and location.string else None
+            location_clean = remove_emojis(raw_location)
+
+            # Clean salary - set to None if no number
+            salary_raw = salary_div.text.strip() if salary_div else None
+            salary_clean = remove_emojis(salary_raw) if salary_raw else None
+            salary = salary_clean if salary_clean and any(char.isdigit() for char in salary_clean) else None
+
+
+            # Extract date and time separately
+            datetime_value = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
+            date_posted, time_posted = (None, None)
+            if datetime_value:
+                try:
+                    date_posted, time_posted = datetime_value.split("T")
+                    time_posted = time_posted.split("+")[0]
+                except:
+                    date_posted, time_posted = datetime_value, None
+
+            # Extract search tags
+            searchkeys = [div.h3.text.strip() for div in tag_divs if div.h3] if tag_divs else None
+
+            # Store all values including split date and cleaned fields
             job = {
-                  'link': link,
-                  'company': company,
-                  'Job title': job_title,
-                  'location': location,
-                  'salary': salary,
-                  'datetime_posted': datetime_value,
-                  'time posted': time_posted,
-                  'searchkeys': searchkeys
-              }
+                'link': link,
+                'company': company,
+                'position': job_title_text,
+                'location': location_clean,
+                'salary': salary,
+                'date_posted': date_posted,
+                'time_posted': time_posted,
+                'searchkeys': searchkeys,
+                'Job title': job_title_text
+            }
             results.append(job)
-        ## else statement
-        else:
-            print("Can't get jobs.")
+    else:
+        print(f"Can't get jobs for {keyword}. Status code: {request.status_code}")
+    
     return results
 
-## converting to dataframe
-data = pd.DataFrame(columns=["link", "company", "position", "location", 'salary', 'datetime_posted', 'time posted', 'searchkeys'])
+## Initialize empty dataframe with updated column names
+data = pd.DataFrame(columns=["link", "company", "position", "location", 'salary', 'date_posted', 'time_posted', 'searchkeys', 'Job title'])
 
-# keywords to look out for to extract text
-keyword = ['Mongo', 'Python', 'Vue', 'Jira', 'SEO', 'Apache', 'Data Science', 'React Native', 'Machine learning', 'Social Media', 'Payroll', 'Wordpress', 'Director', 'Shopify', 'architecture', 'Objective C', 'Web', 'Scala']
+## Keywords to look out for
+keyword = [
+    'Mongo', 'Python', 'Vue', 'Jira', 'SEO', 'Apache', 'Data Science', 'React Native', 'Machine learning', 'Social Media', 'Payroll', 'Wordpress', 'Director', 'Shopify', 'architecture', 'Objective C', 'Web', 'Scala'
+]
 
-## going through the keywords for texts related to them
+## Loop through keywords and collect job data
 for item in keyword:
-    print(f'going through {item}')
-    time.sleep(20)
+    print(f'Going through {item}')
+    time.sleep(3)  # delay to avoid hitting site too quickly
     info = extract_remoteok_jobs(item)
-    print(f'extracted item from {item}')
+    print(f'Extracted items from {item}')
     df = pd.DataFrame(info)
-    data = pd.concat([data, df], ignore_index = True)
+    data = pd.concat([data, df], ignore_index=True)
 
-# Save data to csv
-data.to_csv('remoteok.csv', index=False)
+## Save to Parquet 
+data.to_parquet('remoteok.parquet', index=False)
